@@ -1,0 +1,12 @@
+[package]
+name = "onebrc-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+memmap2 = "0.9.9"
+rustc-hash = "2.1.1"
+
+[profile.release]
+lto = "fat"
+opt-level = 3
