@@ -1,26 +1,50 @@
+use std::hash::{BuildHasher, Hasher};
 use std::io;
+use std::os::fd::AsRawFd;
 use std::thread;
 
-use memmap2::{Advice, Mmap};
-use rustc_hash::FxHashMap;
+#[derive(Default)]
+struct DjbHasherBuilder;
+struct DjbHasher(u64);
 
-type HashMap = FxHashMap::<Vec<u8>, Station>;
+impl BuildHasher for DjbHasherBuilder {
+    type Hasher = DjbHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        DjbHasher(5831)
+    }
+}
+
+impl Hasher for DjbHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = ((self.0 << 5) + self.0) ^ *b as u64;
+        }
+    }
+}
+
+type HashMap = std::collections::HashMap::<Vec<u8>, Station, DjbHasherBuilder>;
+
 
 // One station.
 #[derive(Clone)]
 struct Station {
-    min: i32,
-    max: i32,
-    total: i64,
-    count: u32,
+    min: isize,
+    max: isize,
+    total: isize,
+    count: usize,
 }
 
 impl Station {
-    fn new(value: i32) -> Station {
+    fn new(value: isize) -> Station {
         Station{
             min: value,
             max: value,
-            total: value as i64,
+            total: value,
             count: 1
         }
     }
@@ -36,13 +60,13 @@ impl Station {
         self.count += other.count;
     }
 
-    fn update(&mut self, value: i32) {
+    fn update(&mut self, value: isize) {
         if value > self.max {
             self.max= value;
         } else if value < self.min {
             self.min = value;
         }
-        self.total += value as i64;
+        self.total += value;
         self.count += 1;
     }
 }
@@ -66,13 +90,13 @@ fn segments(data: &[u8], nsegs: usize) -> Vec<&[u8]> {
 
 // Parse a floating point number with exactly one digit after the decimal point.
 // Returns the value * 10.
-fn parsenum(number: &[u8]) -> i32 {
+fn parsenum(number: &[u8]) -> isize {
     let neg = (number[0] == b'-') as usize;
     let val = &number[neg..number.len() -2]
         .iter()
-        .fold(0, |tot, &val| tot * 10 + (val - b'0') as i32) * 10
-        + (number[number.len()-1] - b'0') as i32;
-    if neg == 0 { val } else { -val }
+        .fold(0, |tot, &val| tot * 10 + (val - b'0') as isize) * 10
+        + (number[number.len()-1] - b'0') as isize;
+    if neg == 0 { val } else { val.wrapping_neg() }
 }
 
 // Process one segment.
@@ -128,15 +152,38 @@ fn report(hm: &HashMap) {
     println!("}}");
 }
 
+fn mmap<'a>(f: &'a impl AsRawFd) -> io::Result<&'a [u8]> {
+    unsafe {
+        let len = libc::lseek(f.as_raw_fd(), 0, libc::SEEK_END);
+        if len < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            len as libc::size_t,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            f.as_raw_fd(),
+            0,
+        );
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::madvise(ptr, len as libc::size_t, libc::MADV_SEQUENTIAL) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(std::slice::from_raw_parts(ptr as *const u8, len as usize))
+    }
+}
+
 fn main() {
     // Mmap stdin.
     let file = io::stdin();
-    let mmap = unsafe { Mmap::map(&file) }.expect("Mmap::map");
-    let _ = mmap.advise(Advice::Sequential);
+    let map = mmap(&file).expect("Mmap::map");
 
     // Split up into as many segments as we have cpus.
     let ncpus = thread::available_parallelism().expect("ncpus").into();
-    let segs = segments(&mmap[..], ncpus);
+    let segs = segments(&map[..], ncpus);
 
     let results = thread::scope(|s| {
         let mut handles = Vec::new();

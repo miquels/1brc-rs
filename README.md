@@ -26,7 +26,9 @@ time target/release/onebrc-rs < ../1brc//measurements.txt
 time target/release/onebrc-rs < ../1brc//measurements.txt
 ```
 
-On a macbook M1 Pro 2021, it runs in 3.05 seconds.
+On a macbook M1 Pro 2021, it runs in 3.7 seconds. By using `FxHashMap` instead of the standard
+`HashMap` + our own `Hasher` implementation, we can get it down to 3.05 seconds, so there is
+still some place for optimization.
 
 ## Generating the measurements.txt file.
 
