@@ -3,31 +3,74 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::thread;
 
-#[derive(Default)]
-struct DjbHasherBuilder;
-struct DjbHasher(u64);
+const PRIME_1: u64 = 0x9E3779B185EBCA87;
+const PRIME_2: u64 = 0xC2B2AE3D27D4EB4F;
+const PRIME_3: u64 = 0x165667B19E3779F9;
+const PRIME_4: u64 = 0x85EBCA77C2B2AE63;
+const PRIME_5: u64 = 0x27D4EB2F165667C5;
 
-impl BuildHasher for DjbHasherBuilder {
-    type Hasher = DjbHasher;
+#[inline(always)]
+fn get_uint<T: Copy>(input: &[u8]) -> T {
+    debug_assert!(std::mem::size_of::<T>() > 0);
+    debug_assert!(std::mem::size_of::<T>() <= input.len());
 
-    fn build_hasher(&self) -> Self::Hasher {
-        DjbHasher(5831)
+    unsafe {
+        std::ptr::read_unaligned(input.as_ptr() as *const T)
     }
 }
 
-impl Hasher for DjbHasher {
+#[derive(Default)]
+struct XXHasherBuilder;
+struct XXHasher(u64);
+
+impl BuildHasher for XXHasherBuilder {
+    type Hasher = XXHasher;
+
+    #[inline(always)]
+    fn build_hasher(&self) -> Self::Hasher {
+        XXHasher(0)
+    }
+}
+
+impl Hasher for XXHasher {
+    #[inline(always)]
     fn finish(&self) -> u64 {
         self.0
     }
 
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 = ((self.0 << 5) + self.0) ^ *b as u64;
+    #[inline(always)]
+    fn write(&mut self, mut data: &[u8]) {
+        //
+        // This is a variation on the xxhash_64 algoritm. It only implements
+        // the hash algorithm from xxhash for data < 32 bytes. The original hash
+        // has a faster algorithm for data >= 32 bytes. This will still handle
+        // data >= 32 bytes, only a bit slower than the original.
+        //
+        let mut input = PRIME_5.wrapping_add(data.len() as u64);
+
+        while data.len() >= 8 {
+            input ^= get_uint::<u64>(data).to_le().wrapping_mul(PRIME_2).rotate_left(31).wrapping_mul(PRIME_1);
+            input = input.rotate_left(27).wrapping_mul(PRIME_1).wrapping_add(PRIME_4);
+            data = &data[8..];
         }
+
+        while data.len() >= 4 {
+            input ^= (get_uint::<u32>(data).to_le() as u64).wrapping_mul(PRIME_1);
+            input = input.rotate_left(23).wrapping_mul(PRIME_2).wrapping_add(PRIME_3);
+            data = &data[4..];
+        }
+
+        for byte in data.iter() {
+            input ^= (*byte as u64).wrapping_mul(PRIME_5);
+            input = input.rotate_left(11).wrapping_mul(PRIME_1);
+        }
+
+        // The original xxhash_64 algorithm runs a finalizer over 'input'. We don't bother.
+        self.0 = input;
     }
 }
 
-type HashMap = std::collections::HashMap::<Vec<u8>, Station, DjbHasherBuilder>;
+type HashMap = std::collections::HashMap::<Vec<u8>, Station, XXHasherBuilder>;
 
 
 // One station.
